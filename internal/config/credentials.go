@@ -108,6 +108,11 @@ func ReadClientCredentialsFor(client string) (ClientCredentials, error) {
 			return ClientCredentials{}, &CredentialsMissingError{Path: path, Cause: err}
 		}
 
+		// Cache to disk so subsequent calls don't hit the network.
+		if writeErr := WriteClientCredentialsFor(client, creds); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: fetched credentials but failed to cache: %v\n", writeErr)
+		}
+
 		return creds, nil
 	}
 
