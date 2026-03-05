@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"time"
 )
 
 var (
@@ -95,16 +98,64 @@ func ReadClientCredentialsFor(client string) (ClientCredentials, error) {
 	var b []byte
 
 	if b, err = os.ReadFile(path); err != nil { //nolint:gosec // user-provided path
-		if os.IsNotExist(err) {
+		if !os.IsNotExist(err) {
+			return ClientCredentials{}, fmt.Errorf("read credentials: %w", err)
+		}
+
+		// File missing — try auto-fetching from GOG_CREDENTIALS_URL.
+		creds, fetchErr := fetchCredentialsFromURL()
+		if fetchErr != nil {
 			return ClientCredentials{}, &CredentialsMissingError{Path: path, Cause: err}
 		}
 
-		return ClientCredentials{}, fmt.Errorf("read credentials: %w", err)
+		// Cache to disk so subsequent calls don't hit the network.
+		if writeErr := WriteClientCredentialsFor(client, creds); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: fetched credentials but failed to cache: %v\n", writeErr)
+		}
+
+		return creds, nil
 	}
 
 	var c ClientCredentials
 	if err := json.Unmarshal(b, &c); err != nil {
 		return ClientCredentials{}, fmt.Errorf("decode credentials: %w", err)
+	}
+
+	if c.ClientID == "" || c.ClientSecret == "" {
+		return ClientCredentials{}, errMissingClientID
+	}
+
+	return c, nil
+}
+
+// fetchCredentialsFromURL fetches OAuth client credentials from the URL in
+// GOG_CREDENTIALS_URL. Returns an error if the env var is unset or the fetch fails.
+func fetchCredentialsFromURL() (ClientCredentials, error) {
+	url := os.Getenv("GOG_CREDENTIALS_URL")
+	if url == "" {
+		return ClientCredentials{}, errors.New("GOG_CREDENTIALS_URL not set")
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Get(url) //nolint:gosec,noctx // trusted internal URL from env var
+	if err != nil {
+		return ClientCredentials{}, fmt.Errorf("fetch credentials from %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return ClientCredentials{}, fmt.Errorf("fetch credentials: HTTP %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64 KB limit
+	if err != nil {
+		return ClientCredentials{}, fmt.Errorf("read credentials response: %w", err)
+	}
+
+	var c ClientCredentials
+	if err := json.Unmarshal(body, &c); err != nil {
+		return ClientCredentials{}, fmt.Errorf("decode credentials response: %w", err)
 	}
 
 	if c.ClientID == "" || c.ClientSecret == "" {
