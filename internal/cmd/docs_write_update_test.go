@@ -3,19 +3,13 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"google.golang.org/api/docs/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func TestDocsWriteUpdate_JSON(t *testing.T) {
@@ -24,7 +18,7 @@ func TestDocsWriteUpdate_JSON(t *testing.T) {
 
 	var batchRequests [][]*docs.Request
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(path, ":batchUpdate"):
@@ -54,24 +48,11 @@ func TestDocsWriteUpdate_JSON(t *testing.T) {
 			return
 		}
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newDocsJSONContext(t)
 
 	if err := runKong(t, &DocsWriteCmd{}, []string{"doc1", "--text", "hello"}, ctx, flags); err != nil {
 		t.Fatalf("write: %v", err)
@@ -135,7 +116,7 @@ func TestDocsWriteUpdate_Pageless(t *testing.T) {
 
 	var batchRequests [][]*docs.Request
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(path, ":batchUpdate"):
@@ -165,24 +146,11 @@ func TestDocsWriteUpdate_Pageless(t *testing.T) {
 			return
 		}
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newDocsJSONContext(t)
 
 	if err := runKong(t, &DocsWriteCmd{}, []string{"doc1", "--text", "hello", "--pageless"}, ctx, flags); err != nil {
 		t.Fatalf("write pageless: %v", err)
@@ -217,7 +185,7 @@ func TestDocsWriteUpdate_FileInput(t *testing.T) {
 
 	var batchRequests [][]*docs.Request
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(path, ":batchUpdate"):
@@ -247,24 +215,11 @@ func TestDocsWriteUpdate_FileInput(t *testing.T) {
 			return
 		}
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newDocsJSONContext(t)
 
 	// Create a temp file for testing --file input
 	tmpDir := t.TempDir()
@@ -351,30 +306,17 @@ func TestDocsWriteUpdate_FileInputErrors(t *testing.T) {
 	origDocs := newDocsService
 	t.Cleanup(func() { newDocsService = origDocs })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	u, uiErr := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if uiErr != nil {
-		t.Fatalf("ui.New: %v", uiErr)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newDocsJSONContext(t)
 
 	// Test with non-existent file
-	err = runKong(t, &DocsWriteCmd{}, []string{"doc1", "--file", "/nonexistent/path/file.txt"}, ctx, flags)
+	err := runKong(t, &DocsWriteCmd{}, []string{"doc1", "--file", "/nonexistent/path/file.txt"}, ctx, flags)
 	if err == nil {
 		t.Fatal("expected error for non-existent file, got nil")
 	}

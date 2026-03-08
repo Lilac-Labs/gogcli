@@ -3,26 +3,12 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"google.golang.org/api/docs/v1"
-	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/ui"
 )
-
-func newDocsEditTestContext(t *testing.T) context.Context {
-	t.Helper()
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	return ui.WithUI(context.Background(), u)
-}
 
 func tabsDocWithEndIndex() map[string]any {
 	return map[string]any{
@@ -60,7 +46,7 @@ func TestDocsWriteUpdate_WithTabID(t *testing.T) {
 	var batchRequests [][]*docs.Request
 	var includeTabsCalls int
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		switch {
 		case r.Method == http.MethodPost && strings.Contains(path, ":batchUpdate"):
@@ -85,20 +71,11 @@ func TestDocsWriteUpdate_WithTabID(t *testing.T) {
 			return
 		}
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	ctx := newDocsEditTestContext(t)
+	ctx := newDocsCmdContext(t)
 
 	if err := runKong(t, &DocsWriteCmd{}, []string{"doc1", "--text", "hello", "--tab-id", "t.second"}, ctx, flags); err != nil {
 		t.Fatalf("write replace: %v", err)
@@ -143,26 +120,17 @@ func TestDocsWriteUpdate_WithTabID_TabNotFound(t *testing.T) {
 	origDocs := newDocsService
 	t.Cleanup(func() { newDocsService = origDocs })
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(tabsDocWithEndIndex())
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	ctx := newDocsEditTestContext(t)
+	ctx := newDocsCmdContext(t)
 
-	err = runKong(t, &DocsWriteCmd{}, []string{"doc1", "--text", "hello", "--tab-id", "t.missing"}, ctx, flags)
+	err := runKong(t, &DocsWriteCmd{}, []string{"doc1", "--text", "hello", "--tab-id", "t.missing"}, ctx, flags)
 	if err == nil || !strings.Contains(err.Error(), "tab not found: t.missing") {
 		t.Fatalf("unexpected write error: %v", err)
 	}
@@ -179,7 +147,7 @@ func TestDocsEditingCommands_WithTabID(t *testing.T) {
 
 	var batchRequests [][]*docs.Request
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	docSvc, cleanup := newDocsServiceForTest(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, ":batchUpdate") {
 			var req docs.BatchUpdateDocumentRequest
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -195,20 +163,11 @@ func TestDocsEditingCommands_WithTabID(t *testing.T) {
 		}
 		http.NotFound(w, r)
 	}))
-	defer srv.Close()
-
-	docSvc, err := docs.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewDocsService: %v", err)
-	}
+	defer cleanup()
 	newDocsService = func(context.Context, string) (*docs.Service, error) { return docSvc, nil }
 
 	flags := &RootFlags{Account: "a@b.com"}
-	ctx := newDocsEditTestContext(t)
+	ctx := newDocsCmdContext(t)
 
 	if err := runKong(t, &DocsInsertCmd{}, []string{"doc1", "hello", "--index", "5", "--tab-id", "t.abc"}, ctx, flags); err != nil {
 		t.Fatalf("insert: %v", err)
