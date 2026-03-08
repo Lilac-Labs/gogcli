@@ -30,11 +30,22 @@ func (c *CalendarSearchCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return fmt.Errorf("search query cannot be empty")
 	}
 
+	calendarID := c.CalendarID
+	if calendarID == "" {
+		calendarID = primaryCalendarID
+	} else {
+		resolved, resolveErr := resolveCalendarAliasID(calendarID)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		calendarID = resolved
+	}
+
 	svc, err := newCalendarService(ctx, account)
 	if err != nil {
 		return err
 	}
-	calendarID, err := resolveCalendarID(ctx, svc, strings.TrimSpace(c.CalendarID))
+	calendarID, err = resolveCalendarID(ctx, svc, calendarID)
 	if err != nil {
 		return err
 	}

@@ -25,7 +25,16 @@ type CalendarFocusTimeCmd struct {
 
 func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
 	u := ui.FromContext(ctx)
+	var err error
 	calendarID := strings.TrimSpace(c.CalendarID)
+	if calendarID == "" {
+		calendarID = primaryCalendarID
+	} else {
+		calendarID, err = resolveCalendarAliasID(calendarID)
+		if err != nil {
+			return err
+		}
+	}
 	autoDeclineMode, err := validateAutoDeclineMode(c.AutoDecline)
 	if err != nil {
 		return err
