@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 
 	"github.com/steipete/gogcli/internal/googleauth"
@@ -28,6 +30,8 @@ const (
 	tokenExchangeTimeout = 30 * time.Second
 )
 
+var newADCTokenSource = google.DefaultTokenSource
+
 func optionsForAccount(ctx context.Context, service googleauth.Service, email string) ([]option.ClientOption, error) {
 	scopes, err := googleauth.Scopes(service)
 	if err != nil {
@@ -37,12 +41,36 @@ func optionsForAccount(ctx context.Context, service googleauth.Service, email st
 	return optionsForAccountScopes(ctx, string(service), email, scopes)
 }
 
+// IsADCMode reports whether Application Default Credentials mode is active.
+// When GOG_AUTH_MODE=adc, the CLI authenticates using the ambient credentials
+// (e.g. GKE Workload Identity, GOOGLE_APPLICATION_CREDENTIALS, or gcloud ADC)
+// instead of the keyring-based OAuth flow. The service account accesses only
+// resources explicitly shared with it — no domain-wide delegation needed.
+func IsADCMode() bool {
+	return os.Getenv("GOG_AUTH_MODE") == "adc"
+}
+
 func optionsForAccountScopes(ctx context.Context, serviceLabel string, email string, scopes []string) ([]option.ClientOption, error) {
 	slog.Debug("creating client options with custom scopes", "serviceLabel", serviceLabel, "email", email)
 
-	ts, err := tokenSourceForAvailableAccountAuth(ctx, serviceLabel, email, scopes)
-	if err != nil {
-		return nil, err
+	var ts oauth2.TokenSource
+
+	if IsADCMode() {
+		slog.Debug("using Application Default Credentials (GOG_AUTH_MODE=adc)", "serviceLabel", serviceLabel)
+
+		adcTS, err := newADCTokenSource(ctx, scopes...)
+		if err != nil {
+			return nil, fmt.Errorf("ADC token source: %w", err)
+		}
+
+		ts = adcTS
+	} else {
+		var err error
+
+		ts, err = tokenSourceForAvailableAccountAuth(ctx, serviceLabel, email, scopes)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	baseTransport := newBaseTransport()

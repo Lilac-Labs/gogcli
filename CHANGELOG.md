@@ -5,6 +5,7 @@
 ### Added
 - Admin: add Workspace Admin Directory commands for users and groups, including user list/get/create/suspend and group membership list/add/remove. (#403) — thanks @dl-alexandre.
 - Auth: add `--access-token` / `GOG_ACCESS_TOKEN` for direct access-token auth in headless or CI flows, bypassing stored refresh tokens. (#419) — thanks @mmkal.
+- Auth: add Application Default Credentials mode via `GOG_AUTH_MODE=adc` for Workload Identity, Cloud Run, and local `gcloud` ADC flows without stored OAuth refresh tokens. (#357) — thanks @tengis617.
 - Chat: add `chat messages reactions create|list|delete` to manage emoji reactions on messages; `react` and `reaction` are aliases for the reactions command group. (#426) — thanks @fernandopps.
 - Sheets: add named range management (`sheets named-ranges`) and let range-based Sheets commands accept named range names where GridRange-backed operations are needed. (#278) — thanks @TheCrazyLex.
 - Sheets: add `add-tab`, `rename-tab`, and `delete-tab` commands for managing spreadsheet tabs, with delete dry-run/confirmation guardrails. (#309) — thanks @JulienMalige.

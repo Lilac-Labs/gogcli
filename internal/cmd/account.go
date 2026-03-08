@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/steipete/gogcli/internal/config"
+	"github.com/steipete/gogcli/internal/googleapi"
 	"github.com/steipete/gogcli/internal/secrets"
 )
 
@@ -22,6 +23,19 @@ const (
 )
 
 func requireAccount(flags *RootFlags) (string, error) {
+	// In ADC mode the service account authenticates as itself — no user email
+	// or keyring lookup is needed. We still accept --account/GOG_ACCOUNT as an
+	// optional label (e.g. for logging), but it is not required.
+	if googleapi.IsADCMode() {
+		if v := strings.TrimSpace(flags.Account); v != "" {
+			return v, nil
+		}
+		if v := strings.TrimSpace(os.Getenv("GOG_ACCOUNT")); v != "" {
+			return v, nil
+		}
+		return "adc", nil
+	}
+
 	client := config.DefaultClientName
 	var err error
 	if flags != nil {
