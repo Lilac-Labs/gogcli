@@ -77,8 +77,8 @@ func (c *GmailFiltersCreateCmd) Run(ctx context.Context, flags *RootFlags) error
 		return err
 	}
 
-	if err := dryRunExit(ctx, flags, "gmail.filters.create", c.dryRunPayload(forwardTarget)); err != nil {
-		return err
+	if dryRunErr := dryRunExit(ctx, flags, "gmail.filters.create", c.dryRunPayload(forwardTarget)); dryRunErr != nil {
+		return dryRunErr
 	}
 	if forwardTarget != "" {
 		if confirmErr := confirmDestructive(ctx, flags, fmt.Sprintf("create gmail filter forwarding to %s", forwardTarget)); confirmErr != nil {
