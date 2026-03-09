@@ -21,7 +21,7 @@ type GmailFiltersCmd struct {
 type GmailFiltersListCmd struct{}
 
 func (c *GmailFiltersListCmd) Run(ctx context.Context, flags *RootFlags) error {
-	svc, err := loadGmailFiltersService(ctx, flags)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -38,7 +38,7 @@ type GmailFiltersGetCmd struct {
 }
 
 func (c *GmailFiltersGetCmd) Run(ctx context.Context, flags *RootFlags) error {
-	svc, err := loadGmailFiltersService(ctx, flags)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func (c *GmailFiltersCreateCmd) Run(ctx context.Context, flags *RootFlags) error
 		}
 	}
 
-	svc, err := loadGmailFiltersService(ctx, flags)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -117,7 +117,7 @@ func (c *GmailFiltersDeleteCmd) Run(ctx context.Context, flags *RootFlags) error
 		return confirmErr
 	}
 
-	svc, err := loadGmailFiltersService(ctx, flags)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}
@@ -143,7 +143,7 @@ type GmailFiltersExportCmd struct {
 }
 
 func (c *GmailFiltersExportCmd) Run(ctx context.Context, flags *RootFlags) error {
-	svc, err := loadGmailFiltersService(ctx, flags)
+	svc, err := loadGmailSettingsService(ctx, flags)
 	if err != nil {
 		return err
 	}

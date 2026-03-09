@@ -14,14 +14,6 @@ import (
 	"github.com/steipete/gogcli/internal/ui"
 )
 
-func loadGmailFiltersService(ctx context.Context, flags *RootFlags) (*gmail.Service, error) {
-	account, err := requireAccount(flags)
-	if err != nil {
-		return nil, err
-	}
-	return newGmailService(ctx, account)
-}
-
 func writeGmailFiltersList(ctx context.Context, filters []*gmail.Filter) error {
 	if outfmt.IsJSON(ctx) {
 		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"filters": filters})
