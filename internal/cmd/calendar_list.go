@@ -20,6 +20,7 @@ func calendarEventsListCall(ctx context.Context, svc *calendar.Service, calendar
 		MaxResults(maxResults).
 		SingleEvents(true).
 		OrderBy("startTime").
+		ShowDeleted(false).
 		Context(ctx)
 	if strings.TrimSpace(pageToken) != "" {
 		call = call.PageToken(pageToken)
@@ -228,7 +229,11 @@ func renderCalendarEventsTable(ctx context.Context, events []*eventWithCalendar,
 }
 
 func resolveCalendarIDs(ctx context.Context, svc *calendar.Service, inputs []string) ([]string, error) {
-	return resolveCalendarInputs(ctx, svc, inputs, calendarResolveOptions{
+	prepared, err := prepareCalendarIDs(inputs)
+	if err != nil {
+		return nil, err
+	}
+	return resolveCalendarInputs(ctx, svc, prepared, calendarResolveOptions{
 		strict:        true,
 		allowIndex:    true,
 		allowIDLookup: true,

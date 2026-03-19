@@ -14,6 +14,7 @@ import (
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/idtoken"
 
+	"github.com/steipete/gogcli/internal/authclient"
 	"github.com/steipete/gogcli/internal/outfmt"
 	"github.com/steipete/gogcli/internal/ui"
 )
@@ -104,10 +105,12 @@ func (c *GmailWatchStartCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 		return err
 	}
 
-	return writeWatchState(ctx, state)
+	return writeWatchState(ctx, state, false)
 }
 
-type GmailWatchStatusCmd struct{}
+type GmailWatchStatusCmd struct {
+	ShowSecrets bool `help:"Show secret values (e.g. hook token) in plaintext"`
+}
 
 func (c *GmailWatchStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	account, err := requireAccount(flags)
@@ -118,7 +121,7 @@ func (c *GmailWatchStatusCmd) Run(ctx context.Context, flags *RootFlags) error {
 	if err != nil {
 		return err
 	}
-	return writeWatchState(ctx, store.Get())
+	return writeWatchState(ctx, store.Get(), c.ShowSecrets)
 }
 
 type GmailWatchRenewCmd struct {
@@ -177,7 +180,7 @@ func (c *GmailWatchRenewCmd) Run(ctx context.Context, flags *RootFlags) error {
 		return err
 	}
 
-	return writeWatchState(ctx, updated)
+	return writeWatchState(ctx, updated, false)
 }
 
 type GmailWatchStopCmd struct{}
@@ -216,6 +219,7 @@ type GmailWatchServeCmd struct {
 	Bind          string   `name:"bind" help:"Bind address" default:"127.0.0.1"`
 	Port          int      `name:"port" help:"Listen port" default:"8788"`
 	Path          string   `name:"path" help:"Push handler path" default:"/gmail-pubsub"`
+	FetchDelay    string   `name:"fetch-delay" help:"Delay before fetching Gmail history (seconds or duration)" default:"3s"`
 	Timezone      string   `name:"timezone" short:"z" help:"Output timezone (IANA name, e.g. America/New_York, UTC). Default: local"`
 	Local         bool     `name:"local" help:"Use local timezone (default behavior, useful to override --timezone)"`
 	VerifyOIDC    bool     `name:"verify-oidc" help:"Verify Pub/Sub OIDC tokens"`
@@ -261,6 +265,13 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 	historyTypes, err := parseHistoryTypes(c.HistoryTypes)
 	if err != nil {
 		return err
+	}
+	fetchDelay, err := parseDurationSeconds(c.FetchDelay)
+	if err != nil {
+		return err
+	}
+	if fetchDelay < 0 {
+		return usage("--fetch-delay must be >= 0")
 	}
 
 	store, err := loadGmailWatchStore(account)
@@ -326,6 +337,7 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 		HookTimeout:   defaultHookRequestTimeoutSec * time.Second,
 		HistoryMax:    defaultHistoryMaxResults,
 		ResyncMax:     defaultHistoryResyncMax,
+		FetchDelay:    fetchDelay,
 		HistoryTypes:  historyTypes,
 		AllowNoHook:   hook == nil,
 		IncludeBody:   includeBody,
@@ -345,12 +357,20 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 		cfg.MaxBodyBytes = defaultHookMaxBytes
 	}
 
+	selectedClient := strings.TrimSpace(flags.Client)
+	serviceFactory := func(ctx context.Context, account string) (*gmail.Service, error) {
+		if selectedClient != "" {
+			ctx = authclient.WithClient(ctx, selectedClient)
+		}
+		return newGmailService(ctx, account)
+	}
+
 	hookClient := &http.Client{Timeout: cfg.HookTimeout}
 	server := &gmailWatchServer{
 		cfg:             cfg,
 		store:           store,
 		validator:       validator,
-		newService:      newGmailService,
+		newService:      serviceFactory,
 		hookClient:      hookClient,
 		excludeLabelIDs: stringSet(cfg.ExcludeLabels),
 		logf:            u.Err().Printf,
@@ -368,8 +388,15 @@ func (c *GmailWatchServeCmd) Run(ctx context.Context, kctx *kong.Context, flags 
 	return listenAndServe(httpServer)
 }
 
-func writeWatchState(ctx context.Context, state gmailWatchState) error {
+func writeWatchState(ctx context.Context, state gmailWatchState, showSecrets bool) error {
 	if outfmt.IsJSON(ctx) {
+		if !showSecrets && state.Hook != nil && state.Hook.Token != "" {
+			redacted := state
+			h := *state.Hook
+			h.Token = "[REDACTED]"
+			redacted.Hook = &h
+			return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"watch": redacted})
+		}
 		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"watch": state})
 	}
 	u := ui.FromContext(ctx)
@@ -400,7 +427,14 @@ func writeWatchState(ctx context.Context, state gmailWatchState) error {
 			u.Out().Printf("hook_max_bytes\t%d", state.Hook.MaxBytes)
 		}
 		if state.Hook.Token != "" {
-			u.Out().Printf("hook_token\t%s", state.Hook.Token)
+			switch {
+			case showSecrets:
+				u.Out().Printf("hook_token\t%s", state.Hook.Token)
+			case len(state.Hook.Token) > 4:
+				u.Out().Printf("hook_token\t%s...(%d chars)", state.Hook.Token[:4], len(state.Hook.Token))
+			default:
+				u.Out().Printf("hook_token\t[REDACTED]")
+			}
 		}
 	}
 	if state.LastDeliveryStatus != "" {

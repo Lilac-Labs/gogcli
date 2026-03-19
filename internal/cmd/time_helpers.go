@@ -2,11 +2,14 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
 	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/googleapi"
 
 	"github.com/steipete/gogcli/internal/timeparse"
 )
@@ -31,44 +34,106 @@ type TimeRange struct {
 }
 
 // getCalendarLocation fetches a calendar's timezone and returns it as a location.
+// Uses Calendars.Get (not CalendarList.Get) so it works for service accounts
+// whose "primary" calendar may not appear in their CalendarList.
 func getCalendarLocation(ctx context.Context, svc *calendar.Service, calendarID string) (string, *time.Location, error) {
 	calendarID = strings.TrimSpace(calendarID)
 	if calendarID == "" {
 		return "", nil, fmt.Errorf("calendarId required")
 	}
 
-	cal, err := svc.CalendarList.Get(calendarID).Context(ctx).Do()
+	cal, err := svc.Calendars.Get(calendarID).Context(ctx).Do()
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to get calendar %q: %w", calendarID, err)
 	}
 	if cal.TimeZone == "" {
 		return "", nil, fmt.Errorf("calendar %q has no timezone set", calendarID)
 	}
-	loc, err := time.LoadLocation(cal.TimeZone)
+	loc, err := loadTimezoneLocation(cal.TimeZone)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid calendar timezone %q: %w", cal.TimeZone, err)
 	}
 	return cal.TimeZone, loc, nil
 }
 
-// getUserTimezone fetches the timezone from the user's primary calendar.
+// getUserTimezone fetches the user's timezone.
+// It first tries calendarList/primary, then Calendars.Get("primary") for
+// service-account compatibility, then falls back to calendar-list entries
+// because some Workspace accounts return 404 for the primary alias.
 func getUserTimezone(ctx context.Context, svc *calendar.Service) (*time.Location, error) {
-	cal, err := svc.CalendarList.Get("primary").Context(ctx).Do()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get primary calendar: %w", err)
+	calEntry, listAliasErr := svc.CalendarList.Get(primaryCalendarID).Context(ctx).Do()
+	if listAliasErr == nil {
+		return loadTimezoneOrUTC(calEntry.TimeZone)
+	}
+	if !isGoogleNotFound(listAliasErr) {
+		return nil, fmt.Errorf("failed to get primary calendar: %w", listAliasErr)
 	}
 
-	if cal.TimeZone == "" {
-		// Fall back to UTC if no timezone set
+	cal, directErr := svc.Calendars.Get(primaryCalendarID).Context(ctx).Do()
+	if directErr == nil {
+		return loadTimezoneOrUTC(cal.TimeZone)
+	}
+	if !isGoogleNotFound(directErr) {
+		return nil, fmt.Errorf("failed to get primary calendar via calendar list and direct lookup: %w", errors.Join(listAliasErr, directErr))
+	}
+
+	calendars, listErr := listCalendarList(ctx, svc)
+	if listErr != nil {
+		return nil, fmt.Errorf("failed to get primary calendar via alias, direct lookup, and fallback calendar list lookup: %w", errors.Join(listAliasErr, directErr, listErr))
+	}
+
+	return timezoneFromCalendarList(calendars)
+}
+
+func timezoneFromCalendarList(calendars []*calendar.CalendarListEntry) (*time.Location, error) {
+	var fallback *time.Location
+	var firstInvalid error
+	for _, cal := range calendars {
+		if cal == nil {
+			continue
+		}
+		tz := strings.TrimSpace(cal.TimeZone)
+		if tz == "" {
+			continue
+		}
+		loc, err := loadTimezoneLocation(tz)
+		if err != nil {
+			if firstInvalid == nil {
+				firstInvalid = fmt.Errorf("invalid calendar timezone %q on calendar %q: %w", tz, cal.Id, err)
+			}
+			continue
+		}
+		if cal.Primary {
+			return loc, nil
+		}
+		if fallback == nil {
+			fallback = loc
+		}
+	}
+	if fallback != nil {
+		return fallback, nil
+	}
+	if firstInvalid != nil {
+		return nil, firstInvalid
+	}
+
+	return time.UTC, nil
+}
+
+func loadTimezoneOrUTC(timezone string) (*time.Location, error) {
+	if strings.TrimSpace(timezone) == "" {
 		return time.UTC, nil
 	}
-
-	loc, err := time.LoadLocation(cal.TimeZone)
+	loc, err := loadTimezoneLocation(timezone)
 	if err != nil {
-		return nil, fmt.Errorf("invalid calendar timezone %q: %w", cal.TimeZone, err)
+		return nil, fmt.Errorf("invalid calendar timezone %q: %w", timezone, err)
 	}
-
 	return loc, nil
+}
+
+func isGoogleNotFound(err error) bool {
+	var gerr *googleapi.Error
+	return errors.As(err, &gerr) && gerr.Code == http.StatusNotFound
 }
 
 // ResolveTimeRange resolves the time range flags into absolute times.

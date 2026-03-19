@@ -13,10 +13,12 @@ import (
 	"golang.org/x/term"
 )
 
+const helpModeFull = "full"
+
 func helpOptions() kong.HelpOptions {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("GOG_HELP")))
 	return kong.HelpOptions{
-		NoExpandSubcommands: mode != "full",
+		NoExpandSubcommands: mode != helpModeFull,
 	}
 }
 

@@ -4,20 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"google.golang.org/api/calendar/v3"
-	"google.golang.org/api/option"
 )
 
 func newCalendarServiceWithTimezone(t *testing.T, tz string) *calendar.Service {
 	t.Helper()
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.Contains(r.URL.Path, "/calendarList/primary") && r.Method == http.MethodGet {
+	svc, closeServer := newTestCalendarService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/calendars/primary" && r.Method == http.MethodGet {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "primary",
@@ -28,16 +26,7 @@ func newCalendarServiceWithTimezone(t *testing.T, tz string) *calendar.Service {
 		}
 		http.NotFound(w, r)
 	}))
-	t.Cleanup(srv.Close)
-
-	svc, err := calendar.NewService(context.Background(),
-		option.WithoutAuthentication(),
-		option.WithHTTPClient(srv.Client()),
-		option.WithEndpoint(srv.URL+"/"),
-	)
-	if err != nil {
-		t.Fatalf("NewService: %v", err)
-	}
+	t.Cleanup(closeServer)
 	return svc
 }
 
@@ -159,6 +148,63 @@ func TestGetUserTimezoneInvalid(t *testing.T) {
 	svc := newCalendarServiceWithTimezone(t, "Bad/Zone")
 	if _, err := getUserTimezone(context.Background(), svc); err == nil {
 		t.Fatalf("expected error")
+	}
+}
+
+func TestGetUserTimezonePrimaryAlias404FallsBackToCalendarsGet(t *testing.T) {
+	svc, closeServer := newTestCalendarService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/calendarList/primary") && r.Method == http.MethodGet:
+			http.NotFound(w, r)
+		case r.URL.Path == "/calendars/primary" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "primary",
+				"timeZone": "Europe/London",
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer closeServer()
+
+	loc, err := getUserTimezone(context.Background(), svc)
+	if err != nil {
+		t.Fatalf("getUserTimezone: %v", err)
+	}
+	if got := loc.String(); got != "Europe/London" {
+		t.Fatalf("expected direct fallback timezone, got %q", got)
+	}
+}
+
+func TestGetUserTimezoneCalendarListFallbackPrefersPrimaryAndSkipsInvalid(t *testing.T) {
+	svc, closeServer := newTestCalendarService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/calendarList/primary") && r.Method == http.MethodGet:
+			http.NotFound(w, r)
+		case r.URL.Path == "/calendars/primary" && r.Method == http.MethodGet:
+			http.NotFound(w, r)
+		case strings.Contains(r.URL.Path, "/users/me/calendarList") && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{"id": "broken", "timeZone": "Bad/Zone"},
+					{"id": "fallback", "timeZone": "America/New_York"},
+					{"id": "primary", "primary": true, "timeZone": "Europe/London"},
+				},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer closeServer()
+
+	loc, err := getUserTimezone(context.Background(), svc)
+	if err != nil {
+		t.Fatalf("getUserTimezone: %v", err)
+	}
+	if got := loc.String(); got != "Europe/London" {
+		t.Fatalf("expected primary fallback timezone, got %q", got)
 	}
 }
 

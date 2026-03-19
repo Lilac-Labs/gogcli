@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,9 +11,6 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 func newCalendarServiceFromServer(t *testing.T, srv *httptest.Server) *calendar.Service {
@@ -29,16 +25,6 @@ func newCalendarServiceFromServer(t *testing.T, srv *httptest.Server) *calendar.
 		t.Fatalf("NewService: %v", err)
 	}
 	return svc
-}
-
-func newCalendarJSONContext(t *testing.T) context.Context {
-	t.Helper()
-
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	return outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
 }
 
 func TestCalendarCreateCmd_RunJSON(t *testing.T) {
@@ -69,11 +55,7 @@ func TestCalendarCreateCmd_RunJSON(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: io.Discard, Stderr: io.Discard, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONContext(t)
 
 	cmd := &CalendarCreateCmd{}
 	out := captureStdout(t, func() {
@@ -123,11 +105,7 @@ func TestCalendarCreateCmd_WithMeetAndAttachments(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarCreateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -159,7 +137,7 @@ func TestCalendarCreateCmd_RecurringOffsetTimezoneFallback(t *testing.T) {
 				"id": "ev3",
 			})
 			return
-		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/users/me/calendarList/"):
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/calendars/") && !strings.Contains(r.URL.Path, "/events"):
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "primary",
@@ -181,11 +159,7 @@ func TestCalendarCreateCmd_RecurringOffsetTimezoneFallback(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarCreateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -204,8 +178,91 @@ func TestCalendarCreateCmd_RecurringOffsetTimezoneFallback(t *testing.T) {
 	if gotEvent.End == nil || gotEvent.End.TimeZone != "Etc/GMT-2" {
 		t.Fatalf("expected end timezone fallback Etc/GMT-2, got %#v", gotEvent.End)
 	}
-	if len(gotEvent.Recurrence) == 0 {
-		t.Fatalf("expected recurrence to be set")
+	if len(gotEvent.Recurrence) != 1 || gotEvent.Recurrence[0] != "FREQ=WEEKLY;BYDAY=TU,TH" {
+		t.Fatalf("unexpected recurrence payload: %#v", gotEvent.Recurrence)
+	}
+}
+
+func TestCalendarUpdateCmd_RecurrenceFillsMissingTimezone(t *testing.T) {
+	origNew := newCalendarService
+	t.Cleanup(func() { newCalendarService = origNew })
+
+	var (
+		gotPatch      calendar.Event
+		currentLoaded bool
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
+		switch {
+		case r.Method == http.MethodGet && path == "/calendars/cal@example.com/events/ev":
+			currentLoaded = true
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "ev",
+				"start": map[string]any{
+					"dateTime": "2026-03-03T20:00:00+01:00",
+				},
+				"end": map[string]any{
+					"dateTime": "2026-03-03T20:30:00+01:00",
+				},
+			})
+			return
+		case r.Method == http.MethodPatch && path == "/calendars/cal@example.com/events/ev":
+			_ = json.NewDecoder(r.Body).Decode(&gotPatch)
+			if gotPatch.Start == nil || gotPatch.End == nil ||
+				gotPatch.Start.TimeZone == "" || gotPatch.End.TimeZone == "" {
+				w.WriteHeader(http.StatusBadRequest)
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"error": map[string]any{
+						"code":    400,
+						"message": "Missing time zone definition for start time.",
+					},
+				})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "ev",
+			})
+			return
+		case r.Method == http.MethodGet && path == "/users/me/calendarList/cal@example.com":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":       "cal@example.com",
+				"timeZone": "UTC",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	svc := newCalendarServiceFromServer(t, srv)
+	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
+
+	ctx := newCalendarJSONContext(t)
+
+	cmd := &CalendarUpdateCmd{}
+	if err := runKong(t, cmd, []string{
+		"cal@example.com",
+		"ev",
+		"--rrule", "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
+	}
+
+	if !currentLoaded {
+		t.Fatalf("expected existing event fetch for recurring timezone enrichment")
+	}
+	if gotPatch.Start == nil || gotPatch.Start.TimeZone != "Etc/GMT-1" {
+		t.Fatalf("expected start timezone Etc/GMT-1, got %#v", gotPatch.Start)
+	}
+	if gotPatch.End == nil || gotPatch.End.TimeZone != "Etc/GMT-1" {
+		t.Fatalf("expected end timezone Etc/GMT-1, got %#v", gotPatch.End)
+	}
+	if len(gotPatch.Recurrence) != 1 || gotPatch.Recurrence[0] != "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" {
+		t.Fatalf("unexpected recurrence payload: %#v", gotPatch.Recurrence)
 	}
 }
 
@@ -237,11 +294,7 @@ func TestCalendarUpdateCmd_RunJSON(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarUpdateCmd{}
 	out := captureStdout(t, func() {
@@ -302,11 +355,7 @@ func TestCalendarUpdateCmd_AddAttendee(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarUpdateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -351,11 +400,7 @@ func TestCalendarCreateCmd_EventTypeFocusTimeDefaults(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarCreateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -416,11 +461,7 @@ func TestCalendarCreateCmd_EventTypeWorkingLocation(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarCreateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -448,6 +489,12 @@ func TestCalendarCreateCmd_EventTypeWorkingLocation(t *testing.T) {
 	}
 	if gotEvent.WorkingLocationProperties == nil || gotEvent.WorkingLocationProperties.Type != "officeLocation" {
 		t.Fatalf("unexpected working location props: %#v", gotEvent.WorkingLocationProperties)
+	}
+	if gotEvent.Transparency != transparencyTransparent {
+		t.Fatalf("expected transparent working location, got %q", gotEvent.Transparency)
+	}
+	if gotEvent.Visibility != "public" {
+		t.Fatalf("expected public working location visibility, got %q", gotEvent.Visibility)
 	}
 }
 
@@ -480,11 +527,7 @@ func TestCalendarUpdateCmd_EventTypeOOO(t *testing.T) {
 	}
 	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
 
-	u, err := ui.New(ui.Options{Stdout: os.Stdout, Stderr: os.Stderr, Color: "never"})
-	if err != nil {
-		t.Fatalf("ui.New: %v", err)
-	}
-	ctx := outfmt.WithMode(ui.WithUI(context.Background(), u), outfmt.Mode{JSON: true})
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
 
 	cmd := &CalendarUpdateCmd{}
 	if err := runKong(t, cmd, []string{
@@ -512,6 +555,59 @@ func TestCalendarUpdateCmd_EventTypeOOO(t *testing.T) {
 	}
 }
 
+func TestCalendarUpdateCmd_EventTypeWorkingLocationDefaults(t *testing.T) {
+	origNew := newCalendarService
+	t.Cleanup(func() { newCalendarService = origNew })
+
+	var gotEvent calendar.Event
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
+		if r.Method == http.MethodPatch && path == "/calendars/cal@example.com/events/ev" {
+			_ = json.NewDecoder(r.Body).Decode(&gotEvent)
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "ev",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	svc, err := calendar.NewService(context.Background(),
+		option.WithoutAuthentication(),
+		option.WithHTTPClient(srv.Client()),
+		option.WithEndpoint(srv.URL+"/"),
+	)
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
+
+	ctx := newCalendarJSONOutputContext(t, os.Stdout, os.Stderr)
+
+	cmd := &CalendarUpdateCmd{}
+	if err := runKong(t, cmd, []string{
+		"cal@example.com",
+		"ev",
+		"--event-type", "working-location",
+		"--working-location-type", "office",
+		"--working-office-label", "HQ",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
+	}
+
+	if gotEvent.EventType != eventTypeWorkingLocation {
+		t.Fatalf("expected workingLocation event type, got %q", gotEvent.EventType)
+	}
+	if gotEvent.Transparency != transparencyTransparent {
+		t.Fatalf("expected transparent working location, got %q", gotEvent.Transparency)
+	}
+	if gotEvent.Visibility != "public" {
+		t.Fatalf("expected public working location visibility, got %q", gotEvent.Visibility)
+	}
+}
+
 func TestCalendarUpdateCmd_SendUpdates(t *testing.T) {
 	origNew := newCalendarService
 	t.Cleanup(func() { newCalendarService = origNew })
@@ -533,8 +629,8 @@ func TestCalendarUpdateCmd_SendUpdates(t *testing.T) {
 				},
 			})
 			return
-		case r.Method == http.MethodGet && strings.HasPrefix(path, "/users/me/calendarList/"):
-			// getCalendarLocation() fetches the calendar timezone via CalendarList.Get.
+		case r.Method == http.MethodGet && strings.HasPrefix(path, "/calendars/") && !strings.Contains(path, "/events"):
+			// getCalendarLocation() fetches the calendar timezone.
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"id":       "cal",
@@ -570,6 +666,77 @@ func TestCalendarUpdateCmd_SendUpdates(t *testing.T) {
 	}
 	if gotSendUpdates != "all" {
 		t.Fatalf("expected sendUpdates=all, got %q", gotSendUpdates)
+	}
+}
+
+func TestCalendarCreateCmd_ReminderPopupZeroForceSendsMinutes(t *testing.T) {
+	origNew := newCalendarService
+	t.Cleanup(func() { newCalendarService = origNew })
+
+	var gotEvent map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/calendar/v3")
+		switch {
+		case r.Method == http.MethodGet && path == "/users/me/calendarList":
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"items": []map[string]any{
+					{
+						"id":       "cal",
+						"summary":  "cal",
+						"timeZone": "UTC",
+					},
+				},
+			})
+			return
+		case r.Method == http.MethodPost && path == "/calendars/cal/events":
+			if err := json.NewDecoder(r.Body).Decode(&gotEvent); err != nil {
+				t.Fatalf("decode event: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      "ev",
+				"summary": "Zero Reminder",
+			})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	svc := newCalendarServiceFromServer(t, srv)
+	newCalendarService = func(context.Context, string) (*calendar.Service, error) { return svc, nil }
+
+	ctx := newCalendarJSONContext(t)
+	cmd := &CalendarCreateCmd{}
+	if err := runKong(t, cmd, []string{
+		"cal",
+		"--summary", "Zero Reminder",
+		"--from", "2025-01-01T10:00:00Z",
+		"--to", "2025-01-01T11:00:00Z",
+		"--reminder", "popup:0m",
+	}, ctx, &RootFlags{Account: "a@b.com"}); err != nil {
+		t.Fatalf("runKong: %v", err)
+	}
+
+	reminders, ok := gotEvent["reminders"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected reminders payload, got %#v", gotEvent["reminders"])
+	}
+	overrides, ok := reminders["overrides"].([]any)
+	if !ok || len(overrides) != 1 {
+		t.Fatalf("expected one override, got %#v", reminders["overrides"])
+	}
+	override, ok := overrides[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected override object, got %#v", overrides[0])
+	}
+	if method, _ := override["method"].(string); method != "popup" {
+		t.Fatalf("expected popup reminder, got %#v", override)
+	}
+	minutes, ok := override["minutes"].(float64)
+	if !ok || minutes != 0 {
+		t.Fatalf("expected force-sent minutes=0, got %#v", override["minutes"])
 	}
 }
 

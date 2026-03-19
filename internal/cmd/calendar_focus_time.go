@@ -3,13 +3,9 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"google.golang.org/api/calendar/v3"
-
-	"github.com/steipete/gogcli/internal/outfmt"
-	"github.com/steipete/gogcli/internal/ui"
 )
 
 type CalendarFocusTimeCmd struct {
@@ -20,12 +16,14 @@ type CalendarFocusTimeCmd struct {
 	AutoDecline    string   `name:"auto-decline" help:"Auto-decline mode: none, all, new" default:"all"`
 	DeclineMessage string   `name:"decline-message" help:"Message for declined invitations"`
 	ChatStatus     string   `name:"chat-status" help:"Chat status: available, doNotDisturb" default:"doNotDisturb"`
-	Recurrence     []string `name:"rrule" help:"Recurrence rules. Can be repeated."`
+	Recurrence     []string `name:"rrule" help:"Recurrence rules. Can be repeated." sep:"none"`
 }
 
 func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error {
-	u := ui.FromContext(ctx)
-	calendarID := strings.TrimSpace(c.CalendarID)
+	calendarID, err := prepareCalendarID(c.CalendarID, true)
+	if err != nil {
+		return err
+	}
 	autoDeclineMode, err := validateAutoDeclineMode(c.AutoDecline)
 	if err != nil {
 		return err
@@ -57,32 +55,16 @@ func (c *CalendarFocusTimeCmd) Run(ctx context.Context, flags *RootFlags) error 
 		return dryRunErr
 	}
 
-	account, err := requireAccount(flags)
+	mutation, err := newCalendarMutationContext(ctx, flags, calendarID)
 	if err != nil {
 		return err
 	}
 
-	svc, err := newCalendarService(ctx, account)
+	created, err := mutation.insertEvent(ctx, event, calendarInsertOptions{})
 	if err != nil {
 		return err
 	}
-
-	calendarID, err = resolveCalendarID(ctx, svc, calendarID)
-	if err != nil {
-		return err
-	}
-
-	created, err := svc.Events.Insert(calendarID, event).Do()
-	if err != nil {
-		return err
-	}
-
-	tz, loc, _ := getCalendarLocation(ctx, svc, calendarID)
-	if outfmt.IsJSON(ctx) {
-		return outfmt.WriteJSON(ctx, os.Stdout, map[string]any{"event": wrapEventWithDaysWithTimezone(created, tz, loc)})
-	}
-	printCalendarEventWithTimezone(u, created, tz, loc)
-	return nil
+	return mutation.writeEvent(ctx, created)
 }
 
 func validateAutoDeclineMode(s string) (string, error) {

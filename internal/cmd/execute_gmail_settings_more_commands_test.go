@@ -217,7 +217,7 @@ func TestExecute_GmailSettingsMoreCommands_JSON(t *testing.T) {
 			}
 		})
 		_ = captureStdout(t, func() {
-			if err := Execute([]string{"--json", "--account", "a@b.com", "gmail", "delegates", "add", "d@b.com"}); err != nil {
+			if err := Execute([]string{"--json", "--force", "--account", "a@b.com", "gmail", "delegates", "add", "d@b.com"}); err != nil {
 				t.Fatalf("delegates add: %v", err)
 			}
 		})
