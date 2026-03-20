@@ -153,6 +153,18 @@ func shouldForceFileBackend(goos string, backendInfo KeyringBackendInfo, dbusAdd
 	return goos == "linux" && backendInfo.Value == keyringBackendAuto && dbusAddr == ""
 }
 
+// shouldForceFileForPassword returns true when the backend is "auto" and the
+// GOG_KEYRING_PASSWORD env var is set.  If someone explicitly provides a
+// keyring password, they clearly intend to use the encrypted file backend —
+// there's no reason to try Keychain/SecretService first.
+func shouldForceFileForPassword(backendInfo KeyringBackendInfo) bool {
+	if backendInfo.Value != keyringBackendAuto {
+		return false
+	}
+	_, set := os.LookupEnv(keyringPasswordEnv)
+	return set
+}
+
 func shouldUseKeyringTimeout(goos string, backendInfo KeyringBackendInfo, dbusAddr string) bool {
 	return goos == "linux" && backendInfo.Value == "auto" && dbusAddr != ""
 }
@@ -181,6 +193,13 @@ func openKeyring() (keyring.Keyring, error) {
 	// Without DBUS_SESSION_BUS_ADDRESS, SecretService will hang indefinitely
 	// trying to connect (common on headless systems like Raspberry Pi).
 	if shouldForceFileBackend(runtime.GOOS, backendInfo, dbusAddr) {
+		backends = []keyring.BackendType{keyring.FileBackend}
+	}
+
+	// When a keyring password is provided and the backend is still "auto",
+	// force the file backend.  This prevents Keychain/SecretService from being
+	// tried first (which can trigger interactive prompts or hang).
+	if shouldForceFileForPassword(backendInfo) {
 		backends = []keyring.BackendType{keyring.FileBackend}
 	}
 
