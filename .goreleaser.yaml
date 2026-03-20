@@ -25,10 +25,19 @@ builds:
       - darwin_arm64
 
 archives:
-  - builds:
+  - id: versioned
+    builds:
       - gog
     format: tar.gz
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        format: zip
+  - id: latest
+    builds:
+      - gog
+    format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         format: zip
