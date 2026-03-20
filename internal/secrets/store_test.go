@@ -182,6 +182,86 @@ func TestKeyringDbusGuards(t *testing.T) {
 	}
 }
 
+func TestShouldForceFileForPassword(t *testing.T) {
+	tests := []struct {
+		name        string
+		backend     string
+		passwordSet bool
+		password    string
+		want        bool
+	}{
+		{
+			name:        "auto backend with password set",
+			backend:     "auto",
+			passwordSet: true,
+			password:    "secret",
+			want:        true,
+		},
+		{
+			name:        "auto backend with empty password set",
+			backend:     "auto",
+			passwordSet: true,
+			password:    "",
+			want:        true,
+		},
+		{
+			name:        "auto backend without password",
+			backend:     "auto",
+			passwordSet: false,
+			want:        false,
+		},
+		{
+			name:        "explicit file backend with password",
+			backend:     "file",
+			passwordSet: true,
+			password:    "secret",
+			want:        false,
+		},
+		{
+			name:        "explicit keychain backend with password",
+			backend:     "keychain",
+			passwordSet: true,
+			password:    "secret",
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.passwordSet {
+				t.Setenv("GOG_KEYRING_PASSWORD", tt.password)
+			} else {
+				// Ensure the env var is unset
+				t.Setenv("GOG_KEYRING_PASSWORD", "")
+				os.Unsetenv("GOG_KEYRING_PASSWORD")
+			}
+
+			info := KeyringBackendInfo{Value: tt.backend}
+			if got := shouldForceFileForPassword(info); got != tt.want {
+				t.Fatalf("shouldForceFileForPassword=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOpenKeyring_PasswordEnv_ForcesFileBackend(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg-config"))
+	t.Setenv("GOG_KEYRING_BACKEND", "")                     // auto
+	t.Setenv("GOG_KEYRING_PASSWORD", "babyclaw-gog-keyring") // password set
+
+	// With auto backend + password set, should use file backend and succeed
+	store, err := OpenDefault()
+	if err != nil {
+		t.Fatalf("OpenDefault with password env: %v", err)
+	}
+
+	if store == nil {
+		t.Fatal("expected non-nil store")
+	}
+}
+
 func TestOpenKeyringWithTimeout_Success(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
