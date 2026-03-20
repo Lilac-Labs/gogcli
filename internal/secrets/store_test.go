@@ -251,14 +251,26 @@ func TestOpenKeyring_PasswordEnv_ForcesFileBackend(t *testing.T) {
 	t.Setenv("GOG_KEYRING_BACKEND", "")                     // auto
 	t.Setenv("GOG_KEYRING_PASSWORD", "babyclaw-gog-keyring") // password set
 
-	// With auto backend + password set, should use file backend and succeed
-	store, err := OpenDefault()
-	if err != nil {
-		t.Fatalf("OpenDefault with password env: %v", err)
+	// Spy on keyringOpenFunc to capture the config passed to it
+	var capturedCfg keyring.Config
+	origOpen := keyringOpenFunc
+	keyringOpenFunc = func(cfg keyring.Config) (keyring.Keyring, error) {
+		capturedCfg = cfg
+		return origOpen(cfg)
 	}
+	defer func() { keyringOpenFunc = origOpen }()
 
-	if store == nil {
-		t.Fatal("expected non-nil store")
+	_, _ = openKeyring()
+
+	// When GOG_KEYRING_PASSWORD is set with auto backend, file backend should be forced
+	expected := []keyring.BackendType{keyring.FileBackend}
+	if len(capturedCfg.AllowedBackends) != len(expected) {
+		t.Fatalf("expected AllowedBackends=%v, got %v", expected, capturedCfg.AllowedBackends)
+	}
+	for i, b := range expected {
+		if capturedCfg.AllowedBackends[i] != b {
+			t.Fatalf("AllowedBackends[%d]: expected %v, got %v", i, b, capturedCfg.AllowedBackends[i])
+		}
 	}
 }
 
